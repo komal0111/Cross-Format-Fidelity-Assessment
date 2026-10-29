@@ -1,0 +1,301 @@
+
+# Gray scale image analysis 
+==========================
+import os
+import sys
+import json
+from pathlib import Path
+import numpy as np
+import pydicom
+from pydicom.uid import ExplicitVRLittleEndian
+from PIL import Image
+import imageio.v3 as iio
+import matplotlib.pyplot as plt
+from skimage.metrics import structural_similarity as ssim, peak_signal_noise_ratio as psnr
+import pandas as pd
+import datetime
+import warnings
+
+
+
+LUM_COEFFS = (0.299, 0.587, 0.114)
+
+# Create directory structure
+paths = {
+    "root": Path(OUT_ROOT),
+    "exports_rgb": Path(OUT_ROOT) / "exports" / "rgb",
+    "exports_mono2": Path(OUT_ROOT) / "exports" / "mono2",
+    "hist": Path(OUT_ROOT) / "histograms",
+    "diff": Path(OUT_ROOT) / "diffmaps",
+    "heatmaps": Path(OUT_ROOT) / "heatmaps",
+    "stats": Path(OUT_ROOT) / "stats",
+    "provenance": Path(OUT_ROOT) / "provenance",
+}
+for p in paths.values():
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def save_image_pil(arr, path, mode=None, quality=95):
+    """Save numpy array as image using PIL/ImageIO. `arr` is HxW or HxWx3."""
+    im = Image.fromarray(arr.astype(np.uint8))
+    # Ensure parent exists
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    ext = Path(path).suffix.lower()
+    if ext in [".jpg", ".jpeg"]:
+        im.save(path, quality=quality)
+    else:
+        im.save(path)
+
+def compute_luminance(arr_rgb):
+  
+    R = arr_rgb[..., 0].astype(np.float32)
+    G = arr_rgb[..., 1].astype(np.float32)
+    B = arr_rgb[..., 2].astype(np.float32)
+    a, b, c = LUMINANCE_COEFFS
+    Y = (a * R + b * G + c * B)
+    # Clip to 0-255
+    Y = np.clip(np.rint(Y), 0, 255).astype(np.uint8)
+    return Y
+
+def read_dicom(dcm_path):
+   
+    ds = pydicom.dcmread(dcm_path, force=True)
+    arr = ds.pixel_array
+    # If modality or rescale present, apply rescale to get display values (optional)
+    slope = float(getattr(ds, "RescaleSlope", 1.0))
+    intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+    if slope != 1.0 or intercept != 0.0:
+        arr = arr.astype(np.float32) * slope + intercept
+        # If original was integer-like, map back to 0-255 if needed (we assume 8-bit)
+        arr = np.clip(np.rint(arr), 0, 255).astype(np.uint8)
+    return ds, arr
+
+
+    h, w = gray_arr.shape
+    newds.Rows = int(h)
+    newds.Columns = int(w)
+    newds.BitsAllocated = 8
+    newds.BitsStored = 8
+    newds.HighBit = 7
+    newds.PixelRepresentation = 0
+    newds.SamplesPerPixel = 1
+    newds.PixelData = gray_arr.tobytes()
+    # ensure TransferSyntax is common explicit little endian
+    if hasattr(newds, "file_meta"):
+        newds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    newds.save_as(out_dcm_path)
+    return out_dcm_path
+
+def rgb_from_ds(ds, arr):
+   
+    if arr.ndim == 2:
+        
+        return arr
+    return arr
+
+def plot_and_save_hist(data, title, outpath, bins=256):
+    plt.figure(figsize=(6,4))
+    plt.hist(data.flatten(), bins=bins)
+    plt.title(title)
+    plt.xlabel("Pixel value")
+    plt.ylabel("Frequency")
+    plt.tight_layout()
+    plt.savefig(outpath)
+    plt.close()
+
+def plot_and_save_heatmap(arr, outpath, cmap="inferno"):
+    plt.figure(figsize=(6,6))
+    plt.imshow(arr, cmap=cmap)
+    plt.title(Path(outpath).stem)
+    plt.axis("off")
+    plt.colorbar(fraction=0.03, pad=0.01)
+    plt.tight_layout()
+    plt.savefig(outpath)
+    plt.close()
+
+
+summary_rows = []
+
+def process_file(dcm_path):
+    dcm_path = Path(dcm_path)
+    print("Processing:", dcm_path.name)
+    ds, arr = read_dicom(str(dcm_path))
+    photometric = ds.get("PhotometricInterpretation", "UNKNOWN")
+    samples = int(ds.get("SamplesPerPixel", getattr(ds, "SamplesPerPixel", 1)))
+    shape = arr.shape
+
+    # Prepare per-file output dirs
+    base_name = dcm_path.stem
+    out_base = Path(paths["root"]) / base_name
+    
+    (out_base / "histograms").mkdir(parents=True, exist_ok=True)
+    (out_base / "diffmaps").mkdir(parents=True, exist_ok=True)
+    (out_base / "heatmaps").mkdir(parents=True, exist_ok=True)
+    (out_base / "provenance").mkdir(parents=True, exist_ok=True)
+
+    row = {
+        "file": str(dcm_path),
+        "photometric": photometric,
+        "samplesPerPixel": samples,
+        "shape": str(shape),
+    }
+
+      if arr.ndim == 2:
+        gray = arr.astype(np.uint8)
+        # Save grayscale histogram
+        hist_path = out_base / "histograms" / f"{base_name}_gray_hist.png"
+        plot_and_save_hist(gray, f"{base_name} Grayscale Histogram", str(hist_path))
+        # stats
+        stats = {
+            "min": int(gray.min()), "max": int(gray.max()),
+            "mean": float(gray.mean()), "std": float(gray.std())
+        }
+        row.update(stats)
+
+    
+        save_image_pil(gray, out_base / "rgb_exports" / f"{base_name}_gray.tiff")
+        save_image_pil(gray, out_base / "rgb_exports" / f"{base_name}_gray.png")
+        save_image_pil(gray, out_base / "rgb_exports" / f"{base_name}_gray.bmp")
+        if SAVE_LOSSY_JPEG:
+            save_image_pil(gray, out_base / "rgb_exports" / f"{base_name}_gray.jpg", quality=JPEG_QUALITY)
+
+      
+        prov = {
+            "source": str(dcm_path),
+            "converted_to": ["tiff", "png", "bmp"] + (["jpg"] if SAVE_LOSSY_JPEG else []),
+            "notes": "Source was single-channel grayscale; no RGB conversion applied.",
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        with open(out_base / "provenance" / f"{base_name}_prov.json", "w") as f:
+            json.dump(prov, f, indent=2)
+
+        # append summary
+        summary_rows.append(row)
+        return
+
+ 
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        rgb = arr.astype(np.uint8)
+        # Save RGB histograms
+        for ch, name in zip([0,1,2], ["R","G","B"]):
+            hist_path = out_base / "histograms" / f"{base_name}_{name}_hist.png"
+            plot_and_save_hist(rgb[...,ch], f"{base_name} {name} Histogram", str(hist_path))
+
+       
+        gray = compute_luminance(rgb)
+        hist_path = out_base / "histograms" / f"{base_name}_gray_hist.png"
+        plot_and_save_hist(gray, f"{base_name} Grayscale (luminance) Histogram", str(hist_path))
+
+       
+        rgb_pil = Image.fromarray(rgb)
+        rgb_base = out_base / "rgb_exports"
+        rgb_pil.save(rgb_base / f"{base_name}_rgb.tiff")
+        rgb_pil.save(rgb_base / f"{base_name}_rgb.png")
+        rgb_pil.save(rgb_base / f"{base_name}_rgb.bmp")
+        if SAVE_LOSSY_JPEG:
+            rgb_pil.save(rgb_base / f"{base_name}_rgb.jpg", quality=JPEG_QUALITY)
+        
+            save_image_pil(gray, out_base / "mono2_exports" / f"{base_name}_mono2.jpg", quality=JPEG_QUALITY)
+
+       
+        diffs = {
+            "diff_R": (gray.astype(np.int16) - rgb[...,0].astype(np.int16)),
+            "diff_G": (gray.astype(np.int16) - rgb[...,1].astype(np.int16)),
+            "diff_B": (gray.astype(np.int16) - rgb[...,2].astype(np.int16)),
+        }
+
+            for k,v in diffs.items():
+            # center bins for negative values
+            hist_path = out_base / "diffmaps" / f"{base_name}_{k}_hist.png"
+            plt.figure(figsize=(6,4))
+            plt.hist(v.flatten(), bins=256)
+            plt.title(f"{base_name} {k} Histogram")
+            plt.xlabel("Difference (Gray - Channel)")
+            plt.ylabel("Frequency")
+            plt.tight_layout()
+            plt.savefig(hist_path)
+            plt.close()
+
+       
+        absdiff = np.abs(diffs["diff_R"]).astype(np.uint8)
+        plot_and_save_heatmap(absdiff, out_base / "heatmaps" / f"{base_name}_absdiff_R.png")
+
+        try:
+            # convert to same dtype float [0,255]
+            psnr_r = psnr(rgb[...,0].astype(np.uint8), gray.astype(np.uint8), data_range=255)
+            # SSIM expects 2D arrays for single-channel
+            ssim_r = ssim(rgb[...,0].astype(np.uint8), gray.astype(np.uint8), data_range=255)
+        except Exception:
+            psnr_r = None
+            ssim_r = None
+        
+        stats = {
+            "R_min": int(rgb[...,0].min()), "R_max": int(rgb[...,0].max()),
+            "G_min": int(rgb[...,1].min()), "G_max": int(rgb[...,1].max()),
+            "B_min": int(rgb[...,2].min()), "B_max": int(rgb[...,2].max()),
+            "Gray_min": int(gray.min()), "Gray_max": int(gray.max()),
+            "Gray_mean": float(gray.mean()), "Gray_std": float(gray.std()),
+            "Max_diff_R": int(np.abs(diffs["diff_R"]).max()),
+            "Max_diff_G": int(np.abs(diffs["diff_G"]).max()),
+            "Max_diff_B": int(np.abs(diffs["diff_B"]).max()),
+            "Mean_diff_R": float(diffs["diff_R"].mean()),
+            "Mean_diff_G": float(diffs["diff_G"].mean()),
+            "Mean_diff_B": float(diffs["diff_B"].mean()),
+            "PSNR_R_vs_Gray": float(psnr_r) if psnr_r is not None else None,
+            "SSIM_R_vs_Gray": float(ssim_r) if ssim_r is not None else None
+        }
+
+        row.update(stats)
+       
+        prov = {
+            "source": str(dcm_path),
+            "photometric": photometric,
+            "samplesPerPixel": samples,
+            "luminance_formula": f"Y = {LUMINANCE_COEFFS[0]}*R + {LUMINANCE_COEFFS[1]}*G + {LUMINANCE_COEFFS[2]}*B",
+            "mono2_dcm": str(mono2_dcm_path),
+            "exports_rgb": [str(rgb_base / f"{base_name}_rgb.tiff"), str(rgb_base / f"{base_name}_rgb.png"), str(rgb_base / f"{base_name}_rgb.bmp")] + ([str(rgb_base / f"{base_name}_rgb.jpg")] if SAVE_LOSSY_JPEG else []),
+            "exports_mono2": [str(out_base / "mono2_exports" / f"{base_name}_mono2.tiff"), str(out_base / "mono2_exports" / f"{base_name}_mono2.png"), str(out_base / "mono2_exports" / f"{base_name}_mono2.bmp")] + ([str(out_base / "mono2_exports" / f"{base_name}_mono2.jpg")] if SAVE_LOSSY_JPEG else []),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        with open(out_base / "provenance" / f"{base_name}_prov.json", "w") as f:
+            json.dump(prov, f, indent=2)
+
+        summary_rows.append(row)
+        return
+
+    
+    print("Unsupported image shape:", arr.shape)
+    summary_rows.append(row)
+    return
+
+def main():
+    src = Path(SRC_DIR)
+    files_to_process = []
+    if src.is_file():
+        files_to_process = [src]
+    elif src.is_dir():
+        files_to_process = list(src.glob("**/*.dcm"))
+    else:
+        raise FileNotFoundError(f"Source not found: {SRC_DIR}")
+  
+    # Save summary CSV
+    df = pd.DataFrame(summary_rows)
+    df.to_csv(paths["stats"] / "conversion_summary.csv", index=False)
+    # Also save per-run provenance
+    run_prov = {
+        "script": "dicom_conversion_pipeline.py",
+        "src": str(SRC_DIR),
+        "out_root": str(paths["root"]),
+        "timestamp": datetime.datetime.now().isoformat(),
+        "notes": "Converted RGB DICOM to mono2 and exported formats. Check individual provenance files for per-image details."
+    }
+    with open(paths["provenance"] / "run_provenance.json", "w") as f:
+        json.dump(run_prov, f, indent=2)
+
+    print("Processing complete. Outputs at:", paths["root"])
+
+if __name__ == "__main__":
+    main()
+for p in paths.values():
+    p.mkdir(parents=True, exist_ok=True)
+
