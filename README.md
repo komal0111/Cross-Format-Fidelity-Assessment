@@ -21,22 +21,22 @@ Image Quality Metrics
 ===================
 The framework supports the following evaluation metrics:
 
-PSNR
+PSNR:
   Measures image reconstruction error on a logarithmic scale.
-RMSE
+RMSE:
   Quantifies the root mean square difference between pixel values.
-SSIM
+SSIM:
   Measures structural similarity between reference and converted images.
-Histogram Correlation
+Histogram Correlation:
   Evaluates the similarity between image intensity distributions.
-Pixel Difference
+Pixel Difference:
   Identifies pixel-level changes introduced during conversion.
-Changed Pixel Percentage
+Changed Pixel Percentage:
   Measures the proportion of pixels with differences.
-RGB Channel Disparity
+RGB Channel Disparity:
   Quantifies differences among the red, green, and blue channels.
-Supported Image Formats
 
+Image Format used 
 =====================
         TIFF
         PNG
