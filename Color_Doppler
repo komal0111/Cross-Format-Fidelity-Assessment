@@ -1,0 +1,175 @@
+
+#color doppler code
+import numpy as np
+import pydicom
+import pandas as pd
+from PIL import Image
+import matplotlib.pyplot as plt
+from skimage.metrics import structural_similarity as ssim, peak_signal_noise_ratio as psnr
+
+
+def ensure_dir(p): Path(p).mkdir(parents=True, exist_ok=True)
+
+def load_dicom_any(p1):
+    
+    ds = pydicom.dcmread(p1, force=True)
+    arr = ds.pixel_array  
+    arr = np.asarray(arr)
+
+   
+    if ds.PhotometricInterpretation in ["YBR_FULL", "YBR_FULL_422"]:
+        arr = pydicom.pixel_data_handlers.util.convert_color_space(arr, 
+                                                                   "YBR_FULL",
+                                                                   "RGB")
+ if arr.dtype = np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return arr, ds
+
+def save_image(arr, p1, quality=95):
+    Image.fromarray(arr.astype(np.uint8)).save(p1, quality=quality)
+
+def plot_hist(arr, title, p1):
+    plt.figure(figsize=(5,3))
+    plt.hist(arr.flatten(), bins=256, range=(0,255))
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(path)
+    plt.close()
+
+def plot_heatmap(arr, title, p1, cmap='inferno'):
+    plt.figure(figsize=(6,6))
+    plt.imshow(arr, cmap=cmap)
+    plt.title(title)
+    plt.axis('off')
+    plt.colorbar()
+    plt.savefig(path, bbox_inches='tight')
+    plt.close()
+
+def histogram_corr(a,b):
+    ha,_ = np.histogram(a.flatten(), bins=256, range=(0,255))
+    hb,_ = np.histogram(b.flatten(), bins=256, range=(0,255))
+    if ha.std()==0 or hb.std()==0: return 0
+    return float(np.corrcoef(ha,hb)[0,1])
+
+def rgb_to_luma(arr):
+    R = arr[...,0].astype(float)
+    G = arr[...,1].astype(float)
+    B = arr[...,2].astype(float)
+   
+    return np.clip(Y,0,255).astype(np.uint8)
+
+def pixel_stats(a,b):
+    diff = np.abs(a.astype(int) - b.astype(int))
+    return {
+        "max_pixel_diff": int(diff.max()),
+        "mean_pixel_diff": float(diff.mean()),
+        "median_pixel_diff": float(np.median(diff)),
+        "std_pixel_diff": float(diff.std()),
+        "rmse": float(np.sqrt(np.mean(diff**2))),
+        "percent_pixels_changed": 100*float(np.sum(diff>0))/diff.size,
+        "percent_pixels_changed_gt5": 100*float(np.sum(diff>5))/diff.size,
+        "diff_map_uint8": np.clip(diff,0,255).astype(np.uint8)
+    }
+
+def analyze_rgb_dicom():
+    out = P1(OUT)
+    ensure_dir(out)
+
+    # ---------------- Load DICOM ----------------
+    arr_rgb, ds = load_dicom_any(INP)
+
+    if arr_rgb.ndim != 3 or arr_rgb.shape[2] != 3:
+        raise ValueError("DICOM is not RGB!")
+
+    # ---------------- RGB Channel analysis ----------------
+    R = arr_rgb[...,0].astype(float)
+    G = arr_rgb[...,1].astype(float)
+    B = arr_rgb[...,2].astype(float)
+
+    ch_stats = {
+        "max_diff_RG": float(np.abs(R-G).max()),
+        "max_diff_RB": float(np.abs(R-B).max()),
+        "max_diff_GB": float(np.abs(G-B).max()),
+        "mean_diff_RG": float(np.abs(R-G).mean()),
+        "mean_diff_RB": float(np.abs(R-B).mean()),
+        "mean_diff_GB": float(np.abs(G-B).mean()),
+    }
+   
+
+    plot_hist(R, "R channel", out/"R_hist.png")
+    plot_hist(G, "G channel", out/"G_hist.png")
+    plot_hist(B, "B channel", out/"B_hist.png")
+
+    diff_heat = np.mean([np.abs(R-G), np.abs(R-B), np.abs(G-B)], axis=0)
+    plot_heatmap(diff_heat, "RGB channel disparity heatmap", out/"rgb_channel_heatmap.png")
+
+   
+    formats = ["tiff","png","bmp","jpeg"]
+    base_gray = np.mean(arr_rgb, axis=2).astype(np.uint8)
+    rows_rgb = []
+
+    for fmt in formats:
+        out_path = out/f"rgb_export.{fmt}"
+        save_image(arr_rgb, out_path)
+
+        conv = np.array(Image.open(out_path)).astype(np.uint8)
+        if conv.ndim == 2:
+            conv = np.stack([conv]*3, axis=2)
+
+        SS = ssim(arr_rgb, conv, data_range=255, channel_axis=2)
+        PP = psnr(arr_rgb, conv, data_range=255)
+
+        conv_gray = np.mean(conv, axis=2).astype(np.uint8)
+        stats = pixel_stats(base_gray, conv_gray)
+        histc = histogram_corr(base_gray, conv_gray)
+        rows_rgb.append({**{"format":fmt, "SSIM":SS, "PSNR":PP, "histogram_correlation":histc}, **stats})
+
+        plot_heatmap(stats["diff_map_uint8"], f"RGB vs {fmt}", out/f"diff_rgb_vs_{fmt}.png")
+
+    pd.DataFrame(rows_rgb).to_csv(out/"rgb_to_formats.csv", index=False)
+
+    #  RGB -> MONO2 
+    Y = rgb_to_luma(arr_rgb)
+    save_image(Y, out/"mono2.png")
+
+    #  MONO2 -> Formats 
+    rows_mono = []
+    for fmt in formats:
+        out_path = out/f"mono2_export.{fmt}"
+        save_image(Y, out_path)
+        conv = np.array(Image.open(out_path)).astype(np.uint8)
+
+        SS = ssim(Y, conv, data_range=255)
+        PP = psnr(Y, conv, data_range=255)
+        stats = pixel_stats(Y, conv)
+        histc = histogram_corr(Y, conv)
+
+        rows_mono.append({**{"format":fmt, "SSIM":SS, "PSNR":PP, "histogram_correlation":histc}, **stats})
+
+        plot_heatmap(stats["diff_map_uint8"], f"MONO2 vs {fmt}", out/f"diff_mono2_vs_{fmt}.png")
+
+    pd.DataFrame(rows_mono).to_csv(out/"mono2_to_formats.csv", index=False)
+
+    #  RGB vs MONO2 
+    stats_rm = pixel_stats(rgb_to_luma(arr_rgb), Y)
+    SS = ssim(rgb_to_luma(arr_rgb), Y, data_range=255)
+    PP = psnr(rgb_to_luma(arr_rgb), Y, data_range=255)
+    histc = histogram_corr(rgb_to_luma(arr_rgb), Y)
+
+    row = {
+        "SSIM": SS,
+        "PSNR": PP,
+        "histogram_correlation": histc,
+        **stats_rm
+    }
+    pd.DataFrame([row]).to_csv(out/"rgb_vs_mono2.csv", index=False)
+    plot_heatmap(stats_rm["diff_map_uint8"], "RGB luminance vs MONO2", out/"diff_rgb_vs_mono2.png")
+
+    print("\n Analysis done")
+    print("Results saved in:", OUT)
+
+if __name__ == "__main__":
+    analyze_rgb_dicom()
+
+IN="upload your images"
+OUT="Path for output images"
