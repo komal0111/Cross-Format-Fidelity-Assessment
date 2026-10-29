@@ -36,6 +36,7 @@ Changed Pixel Percentage
 RGB Channel Disparity
   Quantifies differences among the red, green, and blue channels.
 Supported Image Formats
+
 =====================
         TIFF
         PNG
