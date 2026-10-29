@@ -1,0 +1,149 @@
+# Advanced Filter
+
+import cv2
+import numpy as np
+import pydicom
+import time
+import os
+import pandas as pd
+
+
+# Load DICOM 
+
+def load_dicom(path):
+    ds = pydicom.dcmread(path)
+    img = ds.pixel_array.astype(np.float32)
+
+    if ds.PhotometricInterpretation == "RGB":
+        # Normalize RGB
+        img = img / img.max()
+    else:
+        # MONOCHROME2
+        img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+
+    return img
+
+
+
+# Load Standard Images
+
+def load_standard_image(path):
+    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise RuntimeError(f"Cannot read image: {path}")
+
+    if img.ndim == 3:
+        img = img.astype(np.float32) / 255.0
+    else:
+        img = img.astype(np.float32) / 255.0
+
+    return img
+
+
+
+# Advanced Filter (Non-Local Means)
+
+def advanced_filter_gray(img):
+    img8 = (img * 255).astype(np.uint8)
+    out = cv2.fastNlMeansDenoising(
+        img8, None,
+        h=10,
+        templateWindowSize=7,
+        searchWindowSize=21
+    )
+    return out.astype(np.float32) / 255.0
+
+
+def advanced_filter_rgb(img):
+    img8 = (img * 255).astype(np.uint8)
+    out = cv2.fastNlMeansDenoisingColored(
+        img8, None,
+        h=10,
+        hColor=10,
+        templateWindowSize=7,
+        searchWindowSize=21
+    )
+    return out.astype(np.float32) / 255.0
+
+
+# Computational Time Measurement
+
+def measure_time_advanced(img, runs=10):
+    is_rgb = (img.ndim == 3)
+
+    times = []
+    for _ in range(runs):
+        start = time.perf_counter()
+
+        if is_rgb:
+            _ = advanced_filter_rgb(img)
+        else:
+            _ = advanced_filter_gray(img)
+
+        end = time.perf_counter()
+        times.append(end - start)
+
+    return np.mean(times), np.std(times)
+
+
+if __name__ == "__main__":
+
+    INPUT_DIR ="path" 
+    OUTPUT_DIR = "upload your path"
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    results = []
+
+    print("\nAdvanced Filter Computational Time Analysis")
+   
+
+    for filename in os.listdir(INPUT_DIR):
+        input_path = os.path.join(INPUT_DIR, filename)
+
+        if not os.path.isfile(input_path):
+            continue
+
+        ext = os.path.splitext(filename)[1].lower()
+
+        # Load image
+        if ext == ".dcm":
+            img = load_dicom(input_path)
+            img_type = "DICOM_RGB" if img.ndim == 3 else "DICOM_MONO2"
+        elif ext in [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"]:
+            img = load_standard_image(input_path)
+            img_type = ext.replace(".", "").upper()
+        else:
+            continue
+        mean_t, std_t = measure_time_advanced(img, runs=10)
+
+        # Apply filter once for saving
+        if img.ndim == 3:
+            enhanced = advanced_filter_rgb(img)
+        else:
+            enhanced = advanced_filter_gray(img)
+
+       
+        out_name = os.path.splitext(filename)[0] + "_advanced.png"
+        out_path = os.path.join(OUTPUT_DIR, out_name)
+        cv2.imwrite(out_path, (enhanced * 255).astype(np.uint8))
+
+        results.append({
+            "Image_Name": filename,
+            "Image_Type": img_type,
+            "Mean_Time_sec": mean_t,
+            "Std_Time_sec": std_t,
+            "Output_File": out_name
+        })
+
+        print(
+            f"{filename:30s} | "
+            f"Mean: {mean_t:.4f} s | "
+            f"Std: {std_t:.4f} s"
+        )
+
+    print("=" * 70)
+
+    df = pd.DataFrame(results)
+   
+
+    print("output", OUTPUT_DIR)
